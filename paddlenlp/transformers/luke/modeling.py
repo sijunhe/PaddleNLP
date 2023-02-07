@@ -18,7 +18,6 @@ import math
 import paddle
 import paddle.nn as nn
 
-from ...transformers.roberta.modeling import RobertaEmbeddings
 from .. import PretrainedModel, register_base_model
 from ..activations import get_activation
 
@@ -55,6 +54,22 @@ def paddle_gather(x, dim, index):
 
 
 layer_norm_eps = 1e-6
+
+
+def create_position_ids_from_input_ids(input_ids, padding_idx, past_key_values_length):
+    """
+    Replace non-padding symbols with their position numbers. Position numbers begin at padding_idx+1. Padding symbols
+    are ignored. This is modified from fairseq's `utils.make_positions`.
+    Args:
+        x: paddle.Tensor x:
+    Returns: paddle.Tensor
+    """
+    if past_key_values_length is None:
+        past_key_values_length = 0
+    # The series of casts and type-conversions here are carefully balanced to both work with ONNX export and XLA.
+    mask = (input_ids != padding_idx).cast("int64")
+    incremental_indices = (paddle.cumsum(mask, axis=1) + past_key_values_length) * mask
+    return incremental_indices + padding_idx
 
 
 class LukePretrainedModel(PretrainedModel):
@@ -163,10 +178,8 @@ class LukeOutput(nn.Layer):
         return hidden_states
 
 
-class LukeEmbeddings(RobertaEmbeddings):
-    """
-    Same as BertEmbeddings with a tiny tweak for positional embeddings indexing.
-    """
+class LukeEmbeddings(nn.Layer):
+    r"""Same as RobertaEmbeddings"""
 
     def __init__(
         self,
@@ -176,25 +189,34 @@ class LukeEmbeddings(RobertaEmbeddings):
         type_vocab_size=1,
         pad_token_id=0,
         hidden_dropout_prob=0.1,
+        cls_token_id: int = 101,
     ):
-        super(LukeEmbeddings, self).__init__(
-            vocab_size=vocab_size,
-            hidden_size=hidden_size,
-            hidden_dropout_prob=hidden_dropout_prob,
-            max_position_embeddings=max_position_embeddings,
-            type_vocab_size=type_vocab_size,
-            pad_token_id=pad_token_id,
-        )
+        super(LukeEmbeddings, self).__init__()
+        self.word_embeddings = nn.Embedding(vocab_size, hidden_size, padding_idx=pad_token_id)
+        self.position_embeddings = nn.Embedding(max_position_embeddings, hidden_size)
+        self.token_type_embeddings = nn.Embedding(type_vocab_size, hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(hidden_dropout_prob)
+        self.padding_idx = pad_token_id
+        self.cls_token_id = cls_token_id
 
-    def forward(
-        self,
-        input_ids=None,
-        token_type_ids=None,
-        position_ids=None,
-    ):
-        return super(LukeEmbeddings, self).forward(
-            input_ids=input_ids, token_type_ids=token_type_ids, position_ids=position_ids
-        )
+    def forward(self, input_ids, token_type_ids=None, position_ids=None, past_key_values_length=None):
+        if position_ids is None:
+            position_ids = create_position_ids_from_input_ids(
+                input_ids, padding_idx=self.padding_idx, past_key_values_length=past_key_values_length
+            )
+            position_ids.stop_gradient = True
+        if token_type_ids is None:
+            token_type_ids = paddle.zeros_like(input_ids, dtype="int64")
+
+        input_embedings = self.word_embeddings(input_ids)
+        position_embeddings = self.position_embeddings(position_ids)
+        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+
+        embeddings = input_embedings + position_embeddings + token_type_embeddings
+        embeddings = self.layer_norm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
 
 
 class LukePooler(nn.Layer):

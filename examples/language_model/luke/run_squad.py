@@ -13,23 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import math
 import os
 import random
 import time
-import json
-import math
-from args import parse_args
 from functools import partial
-import numpy as np
 
+import numpy as np
 import paddle
+from args import parse_args
+from datasets import load_dataset
 from paddle.io import DataLoader
 
-from paddlenlp.data import Pad, Stack, Tuple, Dict
-from paddlenlp.transformers import LukeTokenizer, LukeForQuestionAnswering
-from paddlenlp.transformers import LinearDecayWithWarmup
-from paddlenlp.metrics.squad import squad_evaluate, compute_prediction
-from datasets import load_dataset
+from paddlenlp.data import Pad, Stack
+from paddlenlp.metrics.squad import compute_prediction, squad_evaluate
+from paddlenlp.transformers import (
+    LinearDecayWithWarmup,
+    LukeForQuestionAnswering,
+    LukeTokenizer,
+)
 
 MODEL_CLASSES = {"luke": (LukeForQuestionAnswering, LukeTokenizer)}
 
@@ -45,14 +48,16 @@ def prepare_train_features(examples, tokenizer, args):
     # in one example possible giving several features when a context is long, each of those features having a
     # context that overlaps a bit the context of the previous feature.
     tokenized_examples = tokenizer(
-        questions,
-        contexts,
+        text=questions,
+        text_pair=contexts,
         add_prefix_space=True,
         return_token_type_ids=True,
-        max_seq_len=args.max_seq_length,
+        max_length=args.max_seq_length,
         stride=args.doc_stride,
         return_attention_mask=True,
     )
+
+    print(tokenized_examples)
 
     # Since one example might give us several features if it has a long context, we need a map from a feature to
     # its corresponding example. This key gives us just that.
@@ -112,7 +117,7 @@ def prepare_train_features(examples, tokenizer, args):
                 while offsets[token_end_index][1] >= end_char:
                     token_end_index -= 1
                 tokenized_examples["end_positions"].append(token_end_index + 1)
-
+    print(tokenized_examples)
     return tokenized_examples
 
 
@@ -131,7 +136,9 @@ def prepare_validation_features(examples, tokenizer, args):
         add_prefix_space=True,
         return_token_type_ids=True,
         stride=args.doc_stride,
-        max_seq_len=args.max_seq_length,
+        max_length=args.max_seq_length,
+        padding=True,
+        truncation=True,
         return_attention_mask=True,
     )
 
@@ -254,18 +261,22 @@ def run(args):
         train_ds = train_examples.map(
             partial(prepare_train_features, tokenizer=tokenizer, args=args),
             batched=True,
+            batch_size=2,
             remove_columns=column_names,
             num_proc=4,
         )
         train_batch_sampler = paddle.io.DistributedBatchSampler(train_ds, batch_size=args.batch_size, shuffle=True)
-        train_batchify_fn = lambda samples, fn=Dict(
-            {
+
+        def train_batchify_fn(
+            samples,
+            fn={
                 "input_ids": Pad(axis=0, pad_val=tokenizer.pad_token_id),
                 "token_type_ids": Pad(axis=0, pad_val=tokenizer.pad_token_type_id),
                 "start_positions": Stack(dtype="int64"),
                 "end_positions": Stack(dtype="int64"),
-            }
-        ): fn(samples)
+            },
+        ):
+            return fn(samples)
 
         train_data_loader = DataLoader(
             dataset=train_ds, batch_sampler=train_batch_sampler, collate_fn=train_batchify_fn, return_list=True
@@ -331,12 +342,14 @@ def run(args):
         )
         dev_batch_sampler = paddle.io.BatchSampler(dev_ds, batch_size=args.batch_size, shuffle=False)
 
-        dev_batchify_fn = lambda samples, fn=Dict(
-            {
+        def dev_batchify_fn(
+            samples,
+            fn={
                 "input_ids": Pad(axis=0, pad_val=tokenizer.pad_token_id),
                 "token_type_ids": Pad(axis=0, pad_val=tokenizer.pad_token_type_id),
-            }
-        ): fn(samples)
+            },
+        ):
+            return fn(samples)
 
         dev_data_loader = DataLoader(
             dataset=dev_ds, batch_sampler=dev_batch_sampler, collate_fn=dev_batchify_fn, return_list=True

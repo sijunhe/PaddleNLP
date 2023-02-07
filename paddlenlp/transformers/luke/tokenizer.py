@@ -14,18 +14,20 @@
 # limitations under the License.
 """Tokenization classes for LUKE."""
 
-from typing import Optional, Union, List, Dict
+from typing import Dict, List, Optional, Union
 
 try:
     import regex as re
-except:
+except ImportError:
     import re
-import sys
-import json
+
 import itertools
-from .. import RobertaBPETokenizer
-from itertools import repeat
+import json
+import sys
 import warnings
+from itertools import repeat
+
+from .. import RobertaBPETokenizer
 
 try:
     from functools import lru_cache
@@ -245,18 +247,19 @@ class LukeTokenizer(RobertaBPETokenizer):
         entities=None,
         entities_pair=None,
         max_mention_length=30,
-        max_seq_len: Optional[int] = None,
+        max_length: Optional[int] = None,
         stride=0,
         add_prefix_space=False,
         is_split_into_words=False,
-        pad_to_max_seq_len=False,
-        truncation_strategy="longest_first",
+        padding=False,
+        truncation="longest_first",
         return_position_ids=True,
         return_token_type_ids=False,
         return_attention_mask=True,
         return_length=False,
         return_overflowing_tokens=False,
         return_special_tokens_mask=False,
+        **kwargs
     ):
         """
         Performs tokenization and uses the tokenized tokens to prepare model
@@ -302,7 +305,7 @@ class LukeTokenizer(RobertaBPETokenizer):
                 sequences is automatically constructed by filling it with the [MASK] entity.
             max_mention_length (`int`):
                 The entity_position_ids's length.
-            max_seq_len (int, optional):
+            max_length (int, optional):
                 If set to a number, will limit the total sequence returned so
                 that it has a maximum length. If there are overflowing tokens,
                 those overflowing tokens will be added to the returned dictionary
@@ -320,20 +323,24 @@ class LukeTokenizer(RobertaBPETokenizer):
             add_prefix_space (bool, optional):
                 The tokenizer will add a space at the beginning of the sentence when it set to `True`.
                 Defaults to `False`.
-            pad_to_max_seq_len (bool, optional):
-                If set to `True`, the returned sequences would be padded up to
-                `max_seq_len` specified length according to padding side
-                (`self.padding_side`) and padding token id. Defaults to `False`.
-            truncation_strategy (str, optional):
+            padding (`bool` or `str`, *optional*, defaults to `False`):
+                Activates and controls padding. Accepts the following values:
+                - `True` or `'longest'`: Pad to the longest sequence in the batch (or no padding if only a single
+                  sequence if provided).
+                - `'max_length'`: Pad to a maximum length specified with the argument `max_length` or to the maximum
+                  acceptable input length for the model if that argument is not provided.
+                - `False` or `'do_not_pad'` (default): No padding (i.e., can output a batch with sequences of different
+                  lengths).
+            truncation (str, optional):
                 String selected in the following options:
 
                 - 'longest_first' (default) Iteratively reduce the inputs sequence
-                until the input is under `max_seq_len` starting from the longest
+                until the input is under `max_length` starting from the longest
                 one at each token (when there is a pair of input sequences).
                 - 'only_first': Only truncate the first sequence.
                 - 'only_second': Only truncate the second sequence.
                 - 'do_not_truncate': Do not truncate (raise an error if the input
-                sequence is longer than `max_seq_len`).
+                sequence is longer than `max_length`).
 
                 Defaults to 'longest_first'.
             return_position_ids (bool, optional):
@@ -379,10 +386,10 @@ class LukeTokenizer(RobertaBPETokenizer):
                 - **seq_len** (int, optional): The input_ids length. Included when `return_length`
                   is `True`.
                 - **overflowing_tokens** (list[int], optional): List of overflowing tokens.
-                  Included when if `max_seq_len` is specified and `return_overflowing_tokens`
+                  Included when if `max_length` is specified and `return_overflowing_tokens`
                   is True.
                 - **num_truncated_tokens** (int, optional): The number of overflowing tokens.
-                  Included when if `max_seq_len` is specified and `return_overflowing_tokens`
+                  Included when if `max_length` is specified and `return_overflowing_tokens`
                   is True.
                 - **special_tokens_mask** (list[int], optional): List of integers valued 0 or 1,
                   with 0 specifying special added tokens and 1 specifying sequence tokens.
@@ -399,14 +406,26 @@ class LukeTokenizer(RobertaBPETokenizer):
         if add_prefix_space:
             _add_prefix_space = True
 
+        if "pad_to_max_seq_len" in kwargs and padding is None:
+            pad_to_max_seq_len = kwargs.pop("pad_to_max_seq_len")
+            padding = "max_length" if pad_to_max_seq_len else False
+        elif padding is None:
+            padding = False
+
+        if "max_seq_len" in kwargs and max_length is None:
+            max_length = kwargs["max_seq_len"]
+
+        if "truncation_strategy" in kwargs and kwargs["truncation_strategy"] != "longest_first":
+            truncation = kwargs["truncation_strategy"]
+
         encode_output = super(LukeTokenizer, self).__call__(
             text,
             text_pair=text_pair,
-            max_seq_len=max_seq_len,
+            max_length=max_length,
             stride=stride,
             is_split_into_words=is_split_into_words,
-            pad_to_max_seq_len=pad_to_max_seq_len,
-            truncation_strategy=truncation_strategy,
+            padding=padding,
+            truncation=truncation,
             return_position_ids=return_position_ids,
             return_token_type_ids=return_token_type_ids,
             return_attention_mask=return_attention_mask,
@@ -545,7 +564,7 @@ class LukeTokenizer(RobertaBPETokenizer):
                     j = word.index(first, i)
                     new_word.extend(word[i:j])
                     i = j
-                except:
+                except:  # noqa: E722
                     new_word.extend(word[i:])
                     break
 
